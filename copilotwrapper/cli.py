@@ -43,10 +43,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
     if args.command == "proxy":
-        config = load_proxy_config_from_env()
+        try:
+            config = load_proxy_config_from_env()
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
         if args.listen_host:
             config = replace(config, listen_host=args.listen_host)
-        if args.listen_port:
+        if args.listen_port is not None:
             config = replace(config, listen_port=args.listen_port)
         if args.upstream_base_url:
             config = replace(config, upstream_base_url=args.upstream_base_url.rstrip("/"))

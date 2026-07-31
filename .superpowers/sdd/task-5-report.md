@@ -22,3 +22,10 @@ complete
 
 ## concerns
 - none
+
+## reviewer-followup-2026-07-31
+- Fixed high finding: `proxy` now catches missing required env (`ValueError` from config loader), prints a user-facing error to stderr, and exits non-zero (`2`) instead of crashing.
+- Fixed medium finding: `--listen-port 0` now applies correctly by checking `args.listen_port is not None`.
+- Added coverage:
+  - `test_cli_proxy_missing_required_env_exits_with_user_facing_error`
+  - `test_cli_proxy_listen_port_zero_override_is_applied`
