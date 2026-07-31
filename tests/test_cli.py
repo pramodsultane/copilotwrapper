@@ -30,3 +30,15 @@ def test_module_cli_compresses_json_messages() -> None:
     result = json.loads(proc.stdout)
     assert result["tokens_saved"] > 0
     assert result["messages"] != messages
+
+
+def test_cli_proxy_help_includes_env_names() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "copilotwrapper", "proxy", "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    assert "COPILOTWRAPPER_UPSTREAM_BASE_URL" in proc.stdout
