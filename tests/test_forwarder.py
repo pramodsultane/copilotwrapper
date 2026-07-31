@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from urllib.error import HTTPError
 
 import pytest
 
@@ -72,3 +73,51 @@ def test_forward_json_filters_hop_by_hop_headers_and_returns_response(monkeypatc
     assert "connection" not in sent_headers
     assert "host" not in sent_headers
     assert "content-length" not in sent_headers
+
+
+def test_forward_json_rejects_absolute_endpoint() -> None:
+    with pytest.raises(ValueError, match="path-only"):
+        forward_json(
+            endpoint="https://attacker.test/override",
+            payload={"ok": True},
+            incoming_headers={},
+            upstream_base_url="https://example.test/base",
+            timeout_seconds=1.0,
+        )
+
+
+def test_forward_json_passes_through_http_error_response(monkeypatch) -> None:
+    class _ErrorResponse:
+        def __init__(self) -> None:
+            self.status = 429
+            self.headers = {"Retry-After": "1", "Content-Type": "application/json"}
+
+        def read(self) -> bytes:
+            return b'{"error":"rate limited"}'
+
+        def close(self) -> None:
+            return None
+
+    def _fake_urlopen(_req, timeout):  # noqa: ANN001, ANN202
+        assert timeout == 2.0
+        raise HTTPError(
+            url="https://example.test/base/v1/chat/completions",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=_ErrorResponse().headers,
+            fp=_ErrorResponse(),
+        )
+
+    monkeypatch.setattr("copilotwrapper.forwarder.urlopen", _fake_urlopen)
+
+    out = forward_json(
+        endpoint="/v1/chat/completions",
+        payload={"ok": True},
+        incoming_headers={},
+        upstream_base_url="https://example.test/base",
+        timeout_seconds=2.0,
+    )
+
+    assert out.status_code == 429
+    assert out.headers == {"retry-after": "1", "content-type": "application/json"}
+    assert out.body == b'{"error":"rate limited"}'
