@@ -12,6 +12,13 @@ from .reversible_store import ReversibleStore
 _LOGGER = logging.getLogger(__name__)
 
 
+class _StoreWriteError(RuntimeError):
+    def __init__(self, index: int, cause: Exception):
+        super().__init__(str(cause))
+        self.index = index
+        self.cause = cause
+
+
 @dataclass
 class RewriteResult:
     body: dict[str, Any]
@@ -99,6 +106,16 @@ def _rewrite_chat(
             trace_id=trace_id,
             segment_root="messages",
         )
+    except _StoreWriteError as exc:
+        _log_fallback(
+            "chat_store_write_failure",
+            endpoint="/v1/chat/completions",
+            trace_id=trace_id,
+            error_type=type(exc.cause).__name__,
+            error=str(exc.cause),
+            index=exc.index,
+        )
+        return RewriteResult(body=body, transforms_applied=[], trace_id=trace_id)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         _log_fallback(
             "chat_attach_handle_failure",
@@ -145,7 +162,10 @@ def _attach_handles(
         new_content = new_msg.get("content")
         if isinstance(old_content, str) and isinstance(new_content, str) and new_content != old_content:
             handle = _make_handle(trace_id, segment_root, index, old_content)
-            store.put(handle, old_content, trace_id, f"{segment_root}[{index}].content")
+            try:
+                store.put(handle, old_content, trace_id, f"{segment_root}[{index}].content")
+            except Exception as exc:  # pragma: no cover - exercised through caller fallback path
+                raise _StoreWriteError(index, exc) from exc
 
             parsed = json.loads(new_content)
             parsed["reversible_handle"] = handle

@@ -129,6 +129,32 @@ def test_chat_rewrite_attach_handle_failure_falls_back_with_reason_log(tmp_path,
     assert "pipeline_fallback reason=chat_attach_handle_failure" in caplog.text
 
 
+def test_chat_rewrite_store_put_failure_falls_back_with_reason_log(tmp_path, caplog, monkeypatch):
+    store = ReversibleStore(tmp_path / "s.jsonl")
+    body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "tool", "content": json.dumps([{"id": i} for i in range(40)])}],
+    }
+
+    def _broken_put(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "put", _broken_put)
+
+    with caplog.at_level(logging.WARNING, logger="copilotwrapper.pipeline"):
+        out = rewrite_request_body(
+            "/v1/chat/completions",
+            body,
+            store=store,
+            min_tokens_to_compress=20,
+            trace_id="trace-5b",
+        )
+
+    assert out.body == body
+    assert out.transforms_applied == []
+    assert "pipeline_fallback reason=chat_store_write_failure" in caplog.text
+
+
 def test_unsupported_endpoint_logs_passthrough_reason(tmp_path, caplog):
     store = ReversibleStore(tmp_path / "s.jsonl")
     body = {"k": "v"}
