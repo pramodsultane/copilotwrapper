@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from threading import Thread
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -174,4 +174,23 @@ def test_proxy_returns_504_on_timeout(monkeypatch, client):
     assert resp.status_code == 504
     body = json.loads(resp.body)
     assert body["error"]["message"] == "upstream timeout"
+    assert body["error"]["trace_id"]
+
+
+def test_proxy_returns_502_on_upstream_transport_error(monkeypatch, client):
+    def _fake_rewrite(endpoint, body, *, store, min_tokens_to_compress, trace_id):  # noqa: ANN001, ANN202
+        _ = (endpoint, store, min_tokens_to_compress)
+        return RewriteResult(body=body, transforms_applied=[], trace_id=trace_id)
+
+    def _transport_error(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise URLError("connection reset")
+
+    monkeypatch.setattr("copilotwrapper.proxy.rewrite_request_body", _fake_rewrite)
+    monkeypatch.setattr("copilotwrapper.proxy.forward_json", _transport_error)
+
+    resp = client.post("/v1/responses", json_body={"input": "x"})
+
+    assert resp.status_code == 502
+    body = json.loads(resp.body)
+    assert body["error"]["message"] == "upstream transport error"
     assert body["error"]["trace_id"]

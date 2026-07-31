@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import uuid
 from typing import Any
+from urllib.error import URLError
 
 from .config import ProxyConfig
 from .forwarder import forward_json
@@ -49,6 +50,9 @@ def create_proxy_handler(config: ProxyConfig, store: ReversibleStore) -> type[Ba
                 )
             except TimeoutError:
                 self._write_json(504, {"error": {"message": "upstream timeout", "trace_id": trace_id}}, trace_id)
+                return
+            except (URLError, OSError):
+                self._write_json(502, {"error": {"message": "upstream transport error", "trace_id": trace_id}}, trace_id)
                 return
 
             self.send_response(upstream.status_code)
