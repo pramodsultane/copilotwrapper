@@ -1,85 +1,160 @@
-# copilotwrapper
+# copilotwrapper 🚀
 
-copilotwrapper is a clean-room, open-source wrapper framework for AI coding assistant workflows.
+> A clean-room, local-first wrapper to reduce GitHub Copilot CLI token usage **before** requests reach the upstream LLM.
 
-## Clean-Room First
+copilotwrapper adds a conservative compression layer in front of Copilot-compatible OpenAI endpoints.  
+It prioritizes safety and correctness: only tool-style large JSON payloads are rewritten; normal user prose stays untouched.
 
-This repository is intentionally built from scratch as an original implementation.
+## ✨ Highlights
 
-- No copied code from existing projects.
-- No mirrored internal logic patterns.
-- No verbatim structural reuse from protected works.
+| Capability | Status | Notes |
+|---|---|---|
+| Local reverse proxy for Copilot traffic | ✅ | Handles `POST /v1/chat/completions` and `POST /v1/responses` |
+| Conservative pre-LLM compression | ✅ | Targets tool-style large JSON content |
+| Reversible handles for rewritten segments | ✅ | Originals stored locally and linked via `reversible_handle` |
+| `compress` utility command | ✅ | Reads messages JSON from stdin and returns compression result JSON |
+| Clean-room implementation policy | ✅ | See `docs/CLEAN_ROOM_SPEC.md` |
 
-See the full architecture and compliance specification:
-- docs/CLEAN_ROOM_SPEC.md
+## 🧠 Why this exists
 
-## Copilot proxy mode
+When coding agents send large tool outputs, token usage can spike quickly.  
+copilotwrapper intercepts request payloads, compresses only eligible segments, and forwards optimized requests upstream.
 
-Set `COPILOTWRAPPER_UPSTREAM_BASE_URL` to your Copilot-compatible upstream, then run:
+## 🏗️ Architecture (current)
 
-```bash
-copilotwrapper proxy
+```mermaid
+flowchart LR
+    A[GitHub Copilot CLI] --> B[copilotwrapper proxy]
+    B --> C[pipeline.py<br/>Conservative rewrite]
+    C --> D[reversible_store.py<br/>local JSONL store]
+    C --> E[forwarder.py<br/>upstream POST]
+    E --> F[Copilot-compatible upstream API]
 ```
 
-Alternatively, pass the upstream directly on the command line without setting the
-environment variable:
+### Core modules
+
+- `copilotwrapper/proxy.py` → HTTP server, endpoint validation, structured errors
+- `copilotwrapper/pipeline.py` → content-aware conservative rewrite logic
+- `copilotwrapper/reversible_store.py` → local handle→original payload store
+- `copilotwrapper/forwarder.py` → sanitized upstream request forwarding
+- `copilotwrapper/config.py` → env/CLI config loading and validation
+- `copilotwrapper/cli.py` → `compress` and `proxy` commands
+
+## ⚡ Quickstart
+
+### 1) Install
 
 ```bash
-copilotwrapper proxy --upstream-base-url https://api.githubcopilot.com
+pip install -e .
 ```
 
-The upstream URL (from either source) must start with `http://` or `https://`; it is
-validated at startup so a misconfigured scheme fails fast with a clear CLI error
-instead of crashing later on the first request.
+### 2) Start proxy
 
-Route requests through:
+Option A: environment variable
+
+```bash
+export COPILOTWRAPPER_UPSTREAM_BASE_URL=https://api.githubcopilot.com
+python -m copilotwrapper proxy
+```
+
+Option B: CLI flag
+
+```bash
+python -m copilotwrapper proxy --upstream-base-url https://api.githubcopilot.com
+```
+
+### 3) Route Copilot CLI through proxy
 
 ```bash
 export COPILOT_PROVIDER_API_URL=http://127.0.0.1:8787
 ```
 
-Other supported environment variables: `COPILOTWRAPPER_LISTEN_HOST`,
-`COPILOTWRAPPER_LISTEN_PORT`, `COPILOTWRAPPER_MIN_TOKENS`, `COPILOTWRAPPER_STORE_PATH`,
-`COPILOTWRAPPER_TIMEOUT_SECONDS`, and `COPILOTWRAPPER_MAX_BODY_BYTES` (request body size
-cap in bytes, default 10 MiB; oversized requests receive a structured `413` error).
+## 🔧 CLI usage
 
-## Limitations
+### `compress`
 
-- **Chunked request bodies are not supported.** The proxy only accepts requests with an
-  explicit `Content-Length` header. Requests sent with `Transfer-Encoding: chunked` are
-  rejected with a structured `501` error; requests missing `Content-Length` entirely are
-  rejected with a structured `411` error. Configure your HTTP client to send a
-  non-chunked body with `Content-Length`.
-- **Request body size is capped** at `COPILOTWRAPPER_MAX_BODY_BYTES` (default 10 MiB).
-  Requests declaring a larger `Content-Length` are rejected with a structured `413`
-  error before the body is read into memory.
-- **Streaming responses are currently buffered end-to-end.** The proxy waits for the
-  full upstream response body before returning it to the client. For `stream: true`
-  workloads (for example, SSE-style incremental tokens), this means responses are
-  delivered only after upstream completion instead of incrementally.
-- **The reversible store is a plaintext, append-only, unbounded log.** By default it is
-  written to `.copilotwrapper-store.jsonl` in the working directory. It contains the
-  original (pre-compression) content of rewritten tool/message segments so that
-  responses can reference it later via a `reversible_handle`. It is never automatically
-  rotated, expired, or encrypted, and it can grow without bound over the life of a
-  running proxy. Treat this file as sensitive: restrict its filesystem permissions, keep
-  it out of version control (the default filename is covered by `.gitignore`), and
-  periodically rotate or delete it in line with your own data-retention requirements.
-- The `/v1/responses` endpoint is currently passthrough-only (no compression/rewrite is
-  applied yet).
+Compresses JSON messages from stdin:
 
-## License
+```bash
+cat messages.json | python -m copilotwrapper compress
+```
 
-This project is licensed under MIT.
+### `proxy`
 
-## Planned Layout
+Starts the local proxy server:
+
+```bash
+python -m copilotwrapper proxy [--listen-host 127.0.0.1] [--listen-port 8787] [--upstream-base-url ...]
+```
+
+## 🧪 Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `COPILOTWRAPPER_UPSTREAM_BASE_URL` | Yes* | — | Upstream base URL (`http://` or `https://`) |
+| `COPILOTWRAPPER_LISTEN_HOST` | No | `127.0.0.1` | Proxy bind host |
+| `COPILOTWRAPPER_LISTEN_PORT` | No | `8787` | Proxy bind port |
+| `COPILOTWRAPPER_MIN_TOKENS` | No | `250` | Minimum token threshold before compression |
+| `COPILOTWRAPPER_STORE_PATH` | No | `.copilotwrapper-store.jsonl` | Reversible store file path |
+| `COPILOTWRAPPER_TIMEOUT_SECONDS` | No | `30` | Upstream timeout |
+| `COPILOTWRAPPER_MAX_BODY_BYTES` | No | `10485760` (10 MiB) | Max accepted request body size |
+
+\*Not required when `--upstream-base-url` is provided.
+
+## 🛡️ Security and clean-room policy
+
+- ✅ Original, clean-room implementation (no copied proprietary code)
+- ✅ Upstream scheme validation at startup
+- ✅ Path-only endpoint forwarding guard
+- ✅ Hop-by-hop header filtering
+- ✅ Structured error responses with trace IDs
+
+See:
+- `docs/CLEAN_ROOM_SPEC.md`
+- `CONTRIBUTING.md`
+
+## ⚠️ Current limitations
+
+- **Chunked request bodies are not supported** (`Transfer-Encoding: chunked` → `501`).
+- **`Content-Length` is required** (missing → `411`).
+- **Oversized requests are rejected** (`413`) when declared size exceeds limit.
+- **Streaming responses are buffered** end-to-end before client delivery.
+- **Reversible store is plaintext and unbounded** unless you rotate/manage it.
+- **`/v1/responses` is passthrough-only** in conservative mode today.
+
+## 🧬 Repository structure
 
 ```text
 copilotwrapper/
-  docs/
-    CLEAN_ROOM_SPEC.md
-  src/
-  tests/
-  tools/
-  .github/
+├── copilotwrapper/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py
+│   ├── compress.py
+│   ├── config.py
+│   ├── forwarder.py
+│   ├── pipeline.py
+│   ├── proxy.py
+│   └── reversible_store.py
+├── docs/
+│   ├── CLEAN_ROOM_SPEC.md
+│   └── superpowers/
+├── tests/
+├── CONTRIBUTING.md
+├── LICENSE
+├── pyproject.toml
+└── README.md
 ```
+
+## ✅ Development and tests
+
+Run tests:
+
+```bash
+PYTHONPATH=. python -m pytest -q
+```
+
+## 📜 License
+
+This project is licensed under the **MIT License**.  
+See `LICENSE` for full text.
