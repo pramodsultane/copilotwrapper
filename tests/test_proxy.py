@@ -22,6 +22,11 @@ class _Response:
     body: bytes
 
 
+@dataclass
+class _MockUpstream:
+    last_json_body: dict | None = None
+
+
 class _TestHttpClient:
     def __init__(self, base_url: str):
         self._base_url = base_url.rstrip("/")
@@ -85,6 +90,60 @@ def client(tmp_path):
 @pytest.fixture
 def raw_client(client):
     return client
+
+
+@pytest.fixture
+def proxy_and_mock_upstream(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    upstream = _MockUpstream()
+
+    class _MockUpstreamHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            raw_length = self.headers.get("content-length", "0")
+            length = int(raw_length)
+            payload = self.rfile.read(length) if length > 0 else b"{}"
+            upstream.last_json_body = json.loads(payload.decode("utf-8"))
+
+            body = b'{"id":"upstream-ok"}'
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return None
+
+    upstream_server = ThreadingHTTPServer(("127.0.0.1", 0), _MockUpstreamHandler)
+    upstream_thread = Thread(target=upstream_server.serve_forever, daemon=True)
+    upstream_thread.start()
+
+    upstream_host, upstream_port = upstream_server.server_address
+    config = ProxyConfig(
+        listen_host="127.0.0.1",
+        listen_port=0,
+        upstream_base_url=f"http://{upstream_host}:{upstream_port}",
+        min_tokens_to_compress=10,
+        store_path=str(tmp_path / "store.jsonl"),
+        request_timeout_seconds=1.0,
+    )
+    store = ReversibleStore(config.store_path)
+    handler = create_proxy_handler(config, store)
+    proxy_server = ThreadingHTTPServer((config.listen_host, 0), handler)
+    proxy_thread = Thread(target=proxy_server.serve_forever, daemon=True)
+    proxy_thread.start()
+
+    proxy_host, proxy_port = proxy_server.server_address
+    try:
+        yield _TestHttpClient(f"http://{proxy_host}:{proxy_port}"), upstream
+    finally:
+        proxy_server.shutdown()
+        proxy_server.server_close()
+        proxy_thread.join(timeout=5)
+        upstream_server.shutdown()
+        upstream_server.server_close()
+        upstream_thread.join(timeout=5)
 
 
 def test_proxy_returns_404_for_unsupported_endpoint(client):
@@ -194,3 +253,39 @@ def test_proxy_returns_502_on_upstream_transport_error(monkeypatch, client):
     body = json.loads(resp.body)
     assert body["error"]["message"] == "upstream transport error"
     assert body["error"]["trace_id"]
+
+
+def test_proxy_forwards_rewritten_chat_payload(proxy_and_mock_upstream):
+    client, upstream = proxy_and_mock_upstream
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": "summarize"},
+            {"role": "tool", "content": json.dumps([{"id": i, "status": "active"} for i in range(120)])},
+        ],
+    }
+
+    response = client.post("/v1/chat/completions", json_body=payload)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"id": "upstream-ok"}
+    assert upstream.last_json_body is not None
+    rewritten = upstream.last_json_body["messages"][1]["content"]
+    parsed = json.loads(rewritten)
+    assert parsed["kind"] == "json_list_summary"
+    assert "reversible_handle" in parsed
+
+
+def test_proxy_forwards_responses_payload_without_user_text_rewrite(proxy_and_mock_upstream):
+    client, upstream = proxy_and_mock_upstream
+    payload = {
+        "model": "gpt-4.1",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "do not change me"}]}],
+    }
+    expected = json.loads(json.dumps(payload))
+
+    response = client.post("/v1/responses", json_body=payload)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"id": "upstream-ok"}
+    assert upstream.last_json_body == expected

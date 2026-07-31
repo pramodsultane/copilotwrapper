@@ -13,6 +13,20 @@ This repository is intentionally built from scratch as an original implementatio
 See the full architecture and compliance specification:
 - docs/CLEAN_ROOM_SPEC.md
 
+## Copilot proxy mode
+
+Set `COPILOTWRAPPER_UPSTREAM_BASE_URL` to your Copilot-compatible upstream, then run:
+
+```bash
+copilotwrapper proxy
+```
+
+Route requests through:
+
+```bash
+export COPILOT_PROVIDER_API_URL=http://127.0.0.1:8787
+```
+
 ## License
 
 This project is licensed under MIT.
