@@ -3,3 +3,7 @@
 # "Limitations" section) and must never be committed.
 .copilotwrapper-store.jsonl
 *.copilotwrapper-store.jsonl
+
+# Python bytecode artifacts.
+__pycache__/
+*.pyc

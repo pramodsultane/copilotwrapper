@@ -53,6 +53,10 @@ cap in bytes, default 10 MiB; oversized requests receive a structured `413` erro
 - **Request body size is capped** at `COPILOTWRAPPER_MAX_BODY_BYTES` (default 10 MiB).
   Requests declaring a larger `Content-Length` are rejected with a structured `413`
   error before the body is read into memory.
+- **Streaming responses are currently buffered end-to-end.** The proxy waits for the
+  full upstream response body before returning it to the client. For `stream: true`
+  workloads (for example, SSE-style incremental tokens), this means responses are
+  delivered only after upstream completion instead of incrementally.
 - **The reversible store is a plaintext, append-only, unbounded log.** By default it is
   written to `.copilotwrapper-store.jsonl` in the working directory. It contains the
   original (pre-compression) content of rewritten tool/message segments so that
