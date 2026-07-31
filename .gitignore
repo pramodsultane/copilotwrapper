@@ -1,0 +1,5 @@
+# copilotwrapper reversible store (default filename/pattern).
+# This file can contain plaintext original request content (see README
+# "Limitations" section) and must never be committed.
+.copilotwrapper-store.jsonl
+*.copilotwrapper-store.jsonl

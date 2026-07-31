@@ -26,7 +26,8 @@ def main(argv: list[str] | None = None) -> int:
             "  COPILOTWRAPPER_LISTEN_PORT (default: 8787)\n"
             "  COPILOTWRAPPER_MIN_TOKENS (default: 250)\n"
             "  COPILOTWRAPPER_STORE_PATH (default: .copilotwrapper-store.jsonl)\n"
-            "  COPILOTWRAPPER_TIMEOUT_SECONDS (default: 30)"
+            "  COPILOTWRAPPER_TIMEOUT_SECONDS (default: 30)\n"
+            "  COPILOTWRAPPER_MAX_BODY_BYTES (default: 10485760)"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -44,7 +45,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "proxy":
         try:
-            config = load_proxy_config_from_env()
+            # Pass the CLI flag in *before* the required-env check so
+            # `--upstream-base-url` alone is sufficient to start the proxy
+            # without COPILOTWRAPPER_UPSTREAM_BASE_URL being set.
+            config = load_proxy_config_from_env(upstream_base_url_override=args.upstream_base_url)
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
@@ -52,8 +56,6 @@ def main(argv: list[str] | None = None) -> int:
             config = replace(config, listen_host=args.listen_host)
         if args.listen_port is not None:
             config = replace(config, listen_port=args.listen_port)
-        if args.upstream_base_url:
-            config = replace(config, upstream_base_url=args.upstream_base_url.rstrip("/"))
         print(f"Proxy listening on http://{config.listen_host}:{config.listen_port}")
         print("Set Copilot CLI env to route traffic:")
         print(f"COPILOT_PROVIDER_API_URL=http://{config.listen_host}:{config.listen_port}")

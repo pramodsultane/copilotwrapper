@@ -15,6 +15,19 @@ SUPPORTED_ENDPOINTS = {"/v1/chat/completions", "/v1/responses"}
 _HOP_BY_HOP_RESPONSE_HEADERS = {"transfer-encoding", "connection", "content-length"}
 
 
+class _RequestBodyError(Exception):
+    """Raised when the incoming request body cannot be read as configured.
+
+    Carries the HTTP status code the proxy should respond with, so callers
+    get a structured, accurate error instead of a misleading "invalid json".
+    """
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
 def create_proxy_handler(config: ProxyConfig, store: ReversibleStore) -> type[BaseHTTPRequestHandler]:
     class ProxyHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
@@ -25,6 +38,11 @@ def create_proxy_handler(config: ProxyConfig, store: ReversibleStore) -> type[Ba
 
             try:
                 raw = self._read_request_bytes()
+            except _RequestBodyError as exc:
+                self._write_json(exc.status_code, {"error": {"message": exc.message, "trace_id": trace_id}}, trace_id)
+                return
+
+            try:
                 body = json.loads(raw.decode("utf-8"))
                 if not isinstance(body, dict):
                     raise ValueError("request body must be a JSON object")
@@ -54,6 +72,16 @@ def create_proxy_handler(config: ProxyConfig, store: ReversibleStore) -> type[Ba
             except (URLError, OSError):
                 self._write_json(502, {"error": {"message": "upstream transport error", "trace_id": trace_id}}, trace_id)
                 return
+            except ValueError:
+                # Raised by the forwarder for a misconfigured upstream (bad scheme,
+                # non path-only endpoint, etc.). Never let this propagate as an
+                # unhandled server crash; report it as a structured 502 instead.
+                self._write_json(
+                    502,
+                    {"error": {"message": "invalid upstream configuration", "trace_id": trace_id}},
+                    trace_id,
+                )
+                return
 
             self.send_response(upstream.status_code)
             self.send_header("x-copilotwrapper-trace-id", trace_id)
@@ -73,13 +101,25 @@ def create_proxy_handler(config: ProxyConfig, store: ReversibleStore) -> type[Ba
             self.wfile.write(body)
 
         def _read_request_bytes(self) -> bytes:
-            raw_length = self.headers.get("content-length", "0")
+            transfer_encoding = self.headers.get("transfer-encoding", "")
+            codings = {coding.strip().lower() for coding in transfer_encoding.split(",") if coding.strip()}
+            if "chunked" in codings:
+                raise _RequestBodyError(501, "chunked request bodies are not supported")
+
+            raw_length = self.headers.get("content-length")
+            if raw_length is None:
+                raise _RequestBodyError(411, "content-length header is required")
             try:
                 length = int(raw_length)
-            except ValueError as exc:
-                raise ValueError("invalid content-length") from exc
+            except ValueError:
+                raise _RequestBodyError(400, "invalid content-length") from None
             if length < 0:
-                raise ValueError("negative content-length")
+                raise _RequestBodyError(400, "negative content-length")
+            if length > config.max_request_body_bytes:
+                raise _RequestBodyError(
+                    413,
+                    f"request body exceeds maximum allowed size of {config.max_request_body_bytes} bytes",
+                )
             return self.rfile.read(length)
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003

@@ -77,7 +77,10 @@ def test_cli_proxy_listen_port_zero_override_is_applied(monkeypatch) -> None:
         store_path=".copilotwrapper-store.jsonl",
         request_timeout_seconds=30.0,
     )
-    monkeypatch.setattr("copilotwrapper.cli.load_proxy_config_from_env", lambda: base_config)
+    monkeypatch.setattr(
+        "copilotwrapper.cli.load_proxy_config_from_env",
+        lambda **kwargs: base_config,
+    )
     captured: dict[str, ProxyConfig] = {}
 
     def fake_run_proxy_server(config: ProxyConfig) -> None:
@@ -89,3 +92,33 @@ def test_cli_proxy_listen_port_zero_override_is_applied(monkeypatch) -> None:
 
     assert exit_code == 0
     assert captured["config"].listen_port == 0
+
+
+def test_cli_proxy_upstream_base_url_flag_works_without_env_var(monkeypatch) -> None:
+    monkeypatch.delenv("COPILOTWRAPPER_UPSTREAM_BASE_URL", raising=False)
+    captured: dict[str, ProxyConfig] = {}
+
+    def fake_run_proxy_server(config: ProxyConfig) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr("copilotwrapper.cli.run_proxy_server", fake_run_proxy_server)
+
+    exit_code = main(["proxy", "--upstream-base-url", "https://example.test/base/", "--listen-port", "0"])
+
+    assert exit_code == 0
+    assert captured["config"].upstream_base_url == "https://example.test/base"
+
+
+def test_cli_proxy_rejects_invalid_upstream_scheme_from_flag(monkeypatch) -> None:
+    monkeypatch.delenv("COPILOTWRAPPER_UPSTREAM_BASE_URL", raising=False)
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "copilotwrapper", "proxy", "--upstream-base-url", "ftp://example.test"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "http://" in proc.stderr or "https://" in proc.stderr
+    assert "Error:" in proc.stderr
