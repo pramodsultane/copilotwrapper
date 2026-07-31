@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from time import time
 
 _LOGGER = logging.getLogger(__name__)
+_PATH_LOCKS_GUARD = threading.Lock()
+_PATH_LOCKS: dict[Path, threading.Lock] = {}
+
+
+def _get_write_lock(path: Path) -> threading.Lock:
+    resolved_path = path.resolve()
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(resolved_path)
+        if lock is None:
+            lock = threading.Lock()
+            _PATH_LOCKS[resolved_path] = lock
+        return lock
 
 
 class ReversibleStore:
@@ -13,6 +26,7 @@ class ReversibleStore:
         self._path = Path(file_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.touch(exist_ok=True)
+        self._write_lock = _get_write_lock(self._path)
 
     def put(self, handle: str, payload: object, trace_id: str, segment_path: str) -> None:
         row = {
@@ -22,9 +36,10 @@ class ReversibleStore:
             "payload": payload,
             "created_at": time(),
         }
-        with self._path.open("a", encoding="utf-8") as file_handle:
-            file_handle.write(json.dumps(row, separators=(",", ":")))
-            file_handle.write("\n")
+        line = f"{json.dumps(row, separators=(',', ':'))}\n"
+        with self._write_lock:
+            with self._path.open("a", encoding="utf-8") as file_handle:
+                file_handle.write(line)
 
     def get(self, handle: str) -> dict[str, object] | None:
         with self._path.open("r", encoding="utf-8") as file_handle:
