@@ -53,7 +53,10 @@ def forward_json(
 
     headers = {"content-type": "application/json"}
     for key, value in incoming_headers.items():
-        if key.lower() not in HOP_BY_HOP:
+        key_l = key.lower()
+        if key_l == "content-type":
+            continue
+        if key_l not in HOP_BY_HOP:
             headers[key] = value
 
     request = Request(url=url, data=body_bytes, method="POST", headers=headers)

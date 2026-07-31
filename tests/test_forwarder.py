@@ -75,6 +75,44 @@ def test_forward_json_filters_hop_by_hop_headers_and_returns_response(monkeypatc
     assert "content-length" not in sent_headers
 
 
+def test_forward_json_does_not_allow_incoming_content_type_override(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001, ANN201
+            return False
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def _fake_urlopen(req, timeout):  # noqa: ANN001, ANN202
+        assert timeout == 1.0
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _FakeResponse()
+
+    monkeypatch.setattr("copilotwrapper.forwarder.urlopen", _fake_urlopen)
+
+    forward_json(
+        endpoint="/v1/chat/completions",
+        payload={"ok": True},
+        incoming_headers={
+            "Content-Type": "text/plain",
+            "content-type": "application/x-www-form-urlencoded",
+        },
+        upstream_base_url="https://example.test/base",
+        timeout_seconds=1.0,
+    )
+
+    sent_headers = captured["headers"]
+    assert sent_headers["content-type"] == "application/json"
+
+
 def test_forward_json_rejects_absolute_endpoint() -> None:
     with pytest.raises(ValueError, match="path-only"):
         forward_json(
